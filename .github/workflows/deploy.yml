@@ -1,0 +1,114 @@
+name: Two-Tier Web Application Automation
+
+on:
+  push:
+    branches:
+      - main
+      - staging
+      - prod
+    paths:
+      - terraform/**/*      # Trigger on changes in the terraform directory
+      - ansible/**/*        # Trigger on changes in the ansible directory
+  pull_request:
+    branches:
+      - prod
+    paths:
+      - terraform/**/*      # Trigger on pull requests targeting the prod branch
+      - ansible/**/*
+
+jobs:
+  terraform_plan_apply:
+    name: Run Terraform Plan and Apply
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: "1.5.0"
+
+      - name: Terraform Init
+        run: terraform init
+
+      - name: Terraform Plan
+        run: terraform plan -out=tfplan
+
+      - name: Terraform Apply
+        run: terraform apply -auto-approve tfplan
+
+  ansible_provision:
+    name: Run Ansible Playbook for EC2 Provisioning
+    runs-on: ubuntu-latest
+    needs: terraform_plan_apply
+    permissions:
+      actions: read
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Ansible
+        uses: dawidd6/action-ansible-playbook@v2
+        with:
+          playbook: ansible/playbook.yml
+          inventory: ansible/inventory.ini
+
+  tfsec_tflint:
+    name: Run TFLint and tfsec security checks
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+
+    steps:
+      - name: Clone repo
+        uses: actions/checkout@v3
+
+      - uses: terraform-linters/setup-tflint@v2
+        name: Setup TFLint
+        with:
+          tflint_version: v0.38.1
+
+      - name: Show TFLint version
+        run: tflint --version
+
+      # Run TFLint for Terraform directories
+      - name: Run TFLint for 'terraform/alb' directory
+        run: |
+          tflint --init
+          tflint -f compact
+        working-directory: ./terraform/alb
+
+      - name: Run TFLint for 'terraform/webservers' directory
+        run: |
+          tflint --init
+          tflint -f compact
+        working-directory: ./terraform/webservers
+
+      - name: Run TFLint for 'terraform/network' directory
+        run: |
+          tflint --init
+          tflint -f compact
+        working-directory: ./terraform/network
+
+      # Run tfsec for Terraform security checks
+      - name: Run tfsec
+        uses: aquasecurity/tfsec-sarif-action@9a83b5c3524f825c020e356335855741fd02745f
+        with:
+          sarif_file: tfsec.sarif
+          working_directory: ./terraform
+
+      # Upload SARIF file to GitHub Security tab
+      - name: Upload SARIF file
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: tfsec.sarif
